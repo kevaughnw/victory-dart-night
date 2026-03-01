@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
-  // Use relative paths so it works on GitHub Pages at any path (e.g. /repo-name/)
-  base: './',
+  // GitHub Pages: must match repo path (e.g. /victory-dart-night/)
+  // Set in CI via GITHUB_PAGES_BASE; use '/' for local dev
+  base: process.env.GITHUB_PAGES_BASE || '/',
 })
