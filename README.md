@@ -24,6 +24,16 @@ npm run build
 
 The app will be live at `https://<username>.github.io/<repo-name>/`.
 
+### If `git push` fails (401 / “Missing or invalid credentials” / Cursor askpass)
+
+That usually means **HTTPS credentials are wrong or expired**. Easiest fix: this repo’s `origin` is set to **SSH** so Git talks to GitHub with your SSH key instead of Cursor’s HTTPS helper.
+
+1. [Add an SSH key to GitHub](https://docs.github.com/en/authentication/connecting-to-github-with-ssh) if you haven’t already.
+2. Test: `ssh -T git@github.com` (should say “Hi username!”).
+3. Push: `git push origin main`.
+
+If you must use **HTTPS**, run `gh auth login` in Terminal (or create a [PAT](https://github.com/settings/tokens) and use it when Git asks for a password). You may need to remove stale GitHub entries in **Keychain Access** (search “github”) after a 401.
+
 ### If `git push` fails (HTTPS / “could not read Username”)
 
 GitHub no longer accepts account passwords over HTTPS. Use one of these:

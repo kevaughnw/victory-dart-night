@@ -214,6 +214,42 @@ export function advancePlayer(matchById, match, slot, player) {
   else nextMatch.p2 = player;
 }
 
+/** Clears a completed match and removes its players from downstream matches, cascading winner clears. */
+export function reverseBracketMatchResult(matchById, matchId) {
+  const m = matchById[matchId];
+  if (!m?.winner) return;
+
+  const w = m.winner;
+  const loser = m.p1?.id === w ? m.p2 : m.p1;
+
+  if (m.nextMatchId != null && m.nextSlot != null) {
+    const n = matchById[m.nextMatchId];
+    if (n) {
+      const adv = m.nextSlot === 0 ? n.p1 : n.p2;
+      if (adv?.id === w) {
+        if (n.winner) reverseBracketMatchResult(matchById, m.nextMatchId);
+        if (m.nextSlot === 0) n.p1 = null;
+        else n.p2 = null;
+      }
+    }
+  }
+
+  if (m.nextLoseMatchId != null && loser && loser.id !== 'bye') {
+    const n = matchById[m.nextLoseMatchId];
+    if (n) {
+      const slot = m.nextLoseSlot;
+      const adv = slot === 0 ? n.p1 : n.p2;
+      if (adv?.id === loser.id) {
+        if (n.winner) reverseBracketMatchResult(matchById, m.nextLoseMatchId);
+        if (slot === 0) n.p1 = null;
+        else n.p2 = null;
+      }
+    }
+  }
+
+  m.winner = null;
+}
+
 export function buildRoundRobinMatches(players) {
   const list = players.filter((p) => p?.id !== 'bye');
   const matches = [];

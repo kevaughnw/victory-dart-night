@@ -252,7 +252,7 @@ function BracketMatchCell({ match, onWin, selectedMatchId, isEditable, onSlotDro
           onSlotDrop={onSlotDrop}
         />
       </div>
-      {!match.winner && match.p1 && match.p2 && match.p1.id !== 'bye' && match.p2.id !== 'bye' && (
+      {match.p1 && match.p2 && match.p1.id !== 'bye' && match.p2.id !== 'bye' && (
         <div className="flex text-sm">
           <button
             type="button"

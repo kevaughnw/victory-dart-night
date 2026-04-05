@@ -8,6 +8,7 @@ import {
   buildCompassDraw,
   buildLadderRankings,
   advancePlayer,
+  reverseBracketMatchResult,
 } from './bracketUtils';
 import { BracketDiagram, SingleElimDiagram } from './BracketDiagram';
 
@@ -41,6 +42,22 @@ function getWinStreak(matchHistory, playerId) {
     else break;
   }
   return streak;
+}
+
+function recomputeQualifiedFromPoolHistory(matchHistory, players) {
+  const qualified = [];
+  const seen = new Set();
+  for (let i = 0; i < matchHistory.length; i++) {
+    const slice = matchHistory.slice(0, i + 1);
+    const entry = matchHistory[i];
+    const streak = getWinStreak(slice, entry.winnerId);
+    if (streak >= 3 && !seen.has(entry.winnerId) && qualified.length < 4) {
+      seen.add(entry.winnerId);
+      const p = players.find((x) => x.id === entry.winnerId);
+      if (p) qualified.push(p);
+    }
+  }
+  return qualified;
 }
 
 function shuffleArray(arr) {
@@ -190,7 +207,6 @@ function BracketMatchCell({ match, onWin, onSlotDrop }) {
   };
 
   const isBye = match.p2?.id === 'bye';
-  const done = match.winner != null;
 
   return (
     <div className="rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 overflow-hidden min-w-[140px]">
@@ -198,7 +214,7 @@ function BracketMatchCell({ match, onWin, onSlotDrop }) {
         <Slot slotKey="p1" player={match.p1} />
         <Slot slotKey="p2" player={match.p2} />
       </div>
-      {!done && (
+      {(isBye && !match.winner) || (!isBye && match.p1 && match.p2 && match.p1.id !== 'bye' && match.p2.id !== 'bye') ? (
         <div className="p-2 border-t border-slate-300 dark:border-slate-600 bg-slate-100/90 dark:bg-slate-700/50">
           {isBye ? (
             <button
@@ -215,7 +231,7 @@ function BracketMatchCell({ match, onWin, onSlotDrop }) {
             </div>
           )}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -637,20 +653,39 @@ export default function DartTournament() {
 
   const handlePoolWin = (matchId, winnerId) => {
     const match = currentRoundMatches.find((m) => m.id === matchId);
-    if (!match || match.winner) return;
+    if (!match) return;
+    if (match.winner === winnerId) return;
     const winner = getPlayer(match, winnerId);
     if (!winner || winner.id === 'bye') return;
 
-    const newHistory = [
-      ...matchHistory,
-      { p1Id: match.p1?.id, p2Id: match.p2?.id, winnerId },
-    ];
-    const winnerStreak = getWinStreak(newHistory, winnerId);
-    const winnerObj = match.p1?.id === winnerId ? match.p1 : match.p2;
-    const newQualified =
-      winnerStreak >= 3 && !qualified.some((q) => q.id === winnerId) && qualified.length < 4
-        ? [...qualified, winnerObj]
-        : qualified;
+    let newHistory;
+    if (match.winner) {
+      const byId = matchHistory.findIndex((h) => h.matchId === matchId);
+      if (byId >= 0) {
+        newHistory = [...matchHistory];
+        newHistory[byId] = { ...matchHistory[byId], winnerId };
+      } else {
+        newHistory = null;
+        for (let i = matchHistory.length - 1; i >= 0; i--) {
+          const h = matchHistory[i];
+          const samePair =
+            (h.p1Id === match.p1?.id && h.p2Id === match.p2?.id) ||
+            (h.p1Id === match.p2?.id && h.p2Id === match.p1?.id);
+          if (samePair && h.winnerId === match.winner) {
+            newHistory = [...matchHistory];
+            newHistory[i] = { ...h, winnerId, matchId };
+            break;
+          }
+        }
+        if (!newHistory) return;
+      }
+    } else {
+      newHistory = [
+        ...matchHistory,
+        { p1Id: match.p1?.id, p2Id: match.p2?.id, winnerId, matchId },
+      ];
+    }
+    const newQualified = recomputeQualifiedFromPoolHistory(newHistory, players);
 
     setMatchHistory(newHistory);
     setQualified(newQualified);
@@ -673,6 +708,11 @@ export default function DartTournament() {
   };
 
   const handleFinalsWin = (matchId, winnerId) => {
+    const match = finalsMatches.find((m) => m.id === matchId);
+    if (!match) return;
+    if (match.winner === winnerId) return;
+    const w = getPlayer(match, winnerId);
+    if (!w || w.id === 'bye') return;
     setFinalsMatches((prev) =>
       prev.map((m) => (m.id === matchId ? { ...m, winner: winnerId } : m))
     );
@@ -681,7 +721,8 @@ export default function DartTournament() {
 
   const handleBracketWin = (matchId, winnerId) => {
     const match = matchById[matchId] || bracketMatches.find((m) => m.id === matchId);
-    if (!match || match.winner) return;
+    if (!match) return;
+    if (match.winner === winnerId) return;
     const winner = getPlayer(match, winnerId);
     if (!winner || winner.id === 'bye') return;
 
@@ -691,6 +732,7 @@ export default function DartTournament() {
     }
     const m = mid[matchId];
     if (!m) return;
+    if (m.winner) reverseBracketMatchResult(mid, matchId);
     m.winner = winnerId;
     const loser = m.p1?.id === winnerId ? m.p2 : m.p1;
 
@@ -710,16 +752,28 @@ export default function DartTournament() {
 
   const handleRoundRobinWin = (matchId, winnerId) => {
     const match = roundRobinMatches.find((m) => m.id === matchId);
-    if (!match || match.winner) return;
-    const loserId = match.p1?.id === winnerId ? match.p2?.id : match.p1?.id;
+    if (!match) return;
+    if (match.winner === winnerId) return;
+    const w = getPlayer(match, winnerId);
+    if (!w || w.id === 'bye') return;
+    const oldWinner = match.winner;
+    const oldLoserId = oldWinner ? (match.p1?.id === oldWinner ? match.p2?.id : match.p1?.id) : null;
+    const newLoserId = match.p1?.id === winnerId ? match.p2?.id : match.p1?.id;
     setRoundRobinMatches((prev) =>
       prev.map((m) => (m.id === matchId ? { ...m, winner: winnerId } : m))
     );
     setRoundRobinStandings((prev) =>
       prev.map((s) => {
-        if (s.player?.id === winnerId) return { ...s, wins: (s.wins ?? 0) + 1 };
-        if (s.player?.id === loserId) return { ...s, losses: (s.losses ?? 0) + 1 };
-        return s;
+        const id = s.player?.id;
+        let wins = s.wins ?? 0;
+        let losses = s.losses ?? 0;
+        if (oldWinner) {
+          if (id === oldWinner) wins -= 1;
+          if (id === oldLoserId) losses -= 1;
+        }
+        if (id === winnerId) wins += 1;
+        if (id === newLoserId) losses += 1;
+        return { ...s, wins, losses };
       })
     );
   };
@@ -727,11 +781,15 @@ export default function DartTournament() {
   const handleCompassWin = (matchId, winnerId) => {
     setCompassData((prev) => {
       if (!prev) return prev;
+      const m = prev.groups.flatMap((g) => g.matches).find((x) => x.id === matchId);
+      if (!m || m.winner === winnerId) return prev;
+      const w = getPlayer(m, winnerId);
+      if (!w || w.id === 'bye') return prev;
       return {
         ...prev,
         groups: prev.groups.map((g) => ({
           ...g,
-          matches: g.matches.map((m) => (m.id === matchId ? { ...m, winner: winnerId } : m)),
+          matches: g.matches.map((x) => (x.id === matchId ? { ...x, winner: winnerId } : x)),
         })),
       };
     });
@@ -740,9 +798,13 @@ export default function DartTournament() {
   const handleCompassFinalsWin = (matchId, winnerId) => {
     setCompassData((prev) => {
       if (!prev || !prev.finals) return prev;
+      const m = prev.finals.find((x) => x.id === matchId);
+      if (!m || m.winner === winnerId) return prev;
+      const w = getPlayer(m, winnerId);
+      if (!w || w.id === 'bye') return prev;
       return {
         ...prev,
-        finals: prev.finals.map((m) => (m.id === matchId ? { ...m, winner: winnerId } : m)),
+        finals: prev.finals.map((x) => (x.id === matchId ? { ...x, winner: winnerId } : x)),
       };
     });
   };
