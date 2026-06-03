@@ -272,11 +272,15 @@ function BracketMatchCell({ match, onWin, onClearWin, selectedMatchId, isEditabl
     setPickSlot(null);
   };
 
+  const sortedPickPlayers = [...availablePlayers].sort((a, b) =>
+    (a.name ?? '').localeCompare(b.name ?? '', undefined, { sensitivity: 'base' })
+  );
+
   const slotPicker = pickSlot != null && isEditable && (
     <div className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/90 px-2 py-2">
       <p className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">Select a player</p>
       <ul className="flex flex-col gap-1 max-h-48 overflow-y-auto">
-        {availablePlayers.map((p) => (
+        {sortedPickPlayers.map((p) => (
           <li key={p.id}>
             <button
               type="button"
