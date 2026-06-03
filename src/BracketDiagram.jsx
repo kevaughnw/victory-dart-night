@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 
 const SLOT_HEIGHT = 44;
 const MATCH_WIDTH = 176;
@@ -56,6 +56,17 @@ function buildBoardMapSingleElim(matches, boardCount) {
   return map;
 }
 
+function applyBoardOverrides(map, overrides) {
+  if (!overrides || typeof overrides !== 'object') return map;
+  const next = new Map(map);
+  for (const [matchId, val] of Object.entries(overrides)) {
+    if (!val || val.board == null) continue;
+    const existing = next.get(matchId) ?? { board: 1, wave: 1, totalWaves: 1 };
+    next.set(matchId, { ...existing, board: val.board });
+  }
+  return next;
+}
+
 function roundGroupsByRoundNum(list) {
   const mm = new Map();
   list.forEach((m) => {
@@ -94,7 +105,7 @@ function buildBoardMapDoubleElim(matches, boardCount) {
   return map;
 }
 
-function SlotCell({ match, slotIndex, onWin, selectedMatchId, isEditable, onSlotDrop }) {
+function SlotCell({ match, slotIndex, isEditable, onSlotDrop, onPickRequest, isPickerActive }) {
   const player = slotIndex === 0 ? match.p1 : match.p2;
   const name = (p) => (p?.id === 'bye' ? 'Bye' : p?.name ?? '—');
   const [dragOver, setDragOver] = useState(false);
@@ -129,14 +140,14 @@ function SlotCell({ match, slotIndex, onWin, selectedMatchId, isEditable, onSlot
   };
 
   const content = (
-    <>
+    <span className="block truncate" title={isEmpty || isByeSlot ? undefined : name(player)}>
       {isEmpty ? (isByeSlot ? 'Bye' : null) : name(player)}
       {!isEmpty && match.winner === player?.id && ' ✓'}
-    </>
+    </span>
   );
   const showDropHere = isEmpty && !isByeSlot;
 
-  const baseClass = `flex-1 px-2.5 py-2 text-base border-b border-slate-300 dark:border-slate-600 ${
+  const baseClass = `w-full min-w-0 px-2.5 py-2 text-base border-b border-slate-300 dark:border-slate-600 last:border-b-0 overflow-hidden ${
     match.winner === player?.id ? 'bg-emerald-200/60 dark:bg-emerald-700/40 font-semibold' : 'bg-slate-100/90 dark:bg-slate-800/80'
   }`;
 
@@ -148,9 +159,26 @@ function SlotCell({ match, slotIndex, onWin, selectedMatchId, isEditable, onSlot
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`${baseClass} ${!player || player.id === 'bye' ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'} ${dragOver ? 'ring-2 ring-amber-500 dark:ring-amber-400 bg-slate-100 dark:bg-slate-700/80' : ''}`}
+        className="w-full min-w-0"
       >
-        {showDropHere ? <span className="text-slate-600 dark:text-slate-500 italic">Drop here</span> : (isByeSlot ? <span className="text-amber-500/90">Bye</span> : content)}
+        <div
+          className={`${baseClass} min-h-[44px] ${!player || player.id === 'bye' ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'} ${dragOver || isPickerActive ? 'ring-2 ring-amber-500 dark:ring-amber-400 bg-slate-100 dark:bg-slate-700/80' : ''}`}
+        >
+          {showDropHere ? (
+            <button
+              type="button"
+              className="w-full h-full text-left text-slate-600 dark:text-slate-500 italic hover:text-slate-800 dark:hover:text-slate-300 truncate"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPickRequest?.(slotIndex);
+              }}
+            >
+              {isPickerActive ? 'Pick below…' : 'Drop here'}
+            </button>
+          ) : (
+            isByeSlot ? <span className="text-amber-500/90">Bye</span> : content
+          )}
+        </div>
       </div>
     );
   }
@@ -159,15 +187,121 @@ function SlotCell({ match, slotIndex, onWin, selectedMatchId, isEditable, onSlot
 }
 
 /** assignment: { board, wave, totalWaves } */
-function matchTitle(match, assignment) {
+function matchTitle(match, assignment, { includeBoard = true } = {}) {
   const base = match.roundLabel ?? '';
   if (!assignment || assignment.board == null || assignment.board < 1) return base;
   const { board, wave, totalWaves } = assignment;
   const wavePart = totalWaves > 1 ? ` · Wave ${wave}/${totalWaves}` : '';
+  if (!includeBoard) return base ? `${base}${wavePart}` : wavePart ? wavePart.slice(3) : '';
   return base ? `${base}${wavePart} · Board ${board}` : `Board ${board}`;
 }
 
-function BracketMatchCell({ match, onWin, selectedMatchId, isEditable, onSlotDrop, boardAssignment }) {
+function MatchHeaderRow({ match, boardAssignment, boardCount, onBoardChange, titleText }) {
+  const roundWaveText = matchTitle(match, boardAssignment, { includeBoard: false });
+  if (onBoardChange && boardAssignment) {
+    const n = Math.max(1, Math.min(6, Number(boardCount) || 1));
+    return (
+      <div className="flex items-center gap-1 px-2 py-1 bg-slate-100/90 dark:bg-slate-700/50 rounded-t min-w-0">
+        <span
+          className="text-slate-600 dark:text-slate-500 text-xs font-mono truncate flex-1 min-w-0"
+          title={roundWaveText || titleText}
+        >
+          {roundWaveText || '—'}
+        </span>
+        <label className="shrink-0 flex items-center gap-0.5 text-xs text-slate-500 dark:text-slate-400">
+          <span>Bd</span>
+          <select
+            className="w-11 py-0.5 px-0.5 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs"
+            value={boardAssignment.board ?? 1}
+            onChange={(e) => onBoardChange(match.id, Number(e.target.value))}
+            aria-label={`Board for ${roundWaveText || match.id}`}
+          >
+            {Array.from({ length: n }, (_, i) => (
+              <option key={i + 1} value={i + 1}>
+                {i + 1}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="text-slate-600 dark:text-slate-500 text-xs font-mono px-2 py-1 bg-slate-100/90 dark:bg-slate-700/50 truncate rounded-t"
+      title={titleText}
+    >
+      {titleText}
+    </div>
+  );
+}
+
+function BracketMatchCell({ match, onWin, onClearWin, selectedMatchId, isEditable, onSlotDrop, boardAssignment, boardCount, onBoardChange, availablePlayers = [] }) {
+  const [pickSlot, setPickSlot] = useState(null);
+  const pickerRef = useRef(null);
+
+  useEffect(() => {
+    if (pickSlot == null) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setPickSlot(null);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [pickSlot]);
+
+  useEffect(() => {
+    if (pickSlot == null) return;
+    let removeClick = () => {};
+    const timer = window.setTimeout(() => {
+      const onDocClick = (e) => {
+        if (pickerRef.current?.contains(e.target)) return;
+        setPickSlot(null);
+      };
+      document.addEventListener('click', onDocClick, true);
+      removeClick = () => document.removeEventListener('click', onDocClick, true);
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      removeClick();
+    };
+  }, [pickSlot]);
+
+  const handlePickPlayer = (player) => {
+    if (pickSlot == null || !onSlotDrop) return;
+    onSlotDrop(match.id, pickSlot, { player: { id: player.id, name: player.name } });
+    setPickSlot(null);
+  };
+
+  const slotPicker = pickSlot != null && isEditable && (
+    <div className="border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/90 px-2 py-2">
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-1.5">Select a player</p>
+      <ul className="flex flex-col gap-1 max-h-48 overflow-y-auto">
+        {availablePlayers.map((p) => (
+          <li key={p.id}>
+            <button
+              type="button"
+              className="w-full text-left px-2.5 py-2 rounded text-base bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 hover:bg-amber-500/15 dark:hover:bg-amber-500/20 hover:border-amber-400/50 truncate"
+              title={p.name}
+              onClick={() => handlePickPlayer(p)}
+            >
+              {p.name}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {availablePlayers.length === 0 && (
+        <p className="text-sm text-slate-500 italic px-1">No players on roster</p>
+      )}
+      <button
+        type="button"
+        className="mt-2 w-full text-center text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 py-1"
+        onClick={() => setPickSlot(null)}
+      >
+        Cancel
+      </button>
+    </div>
+  );
+
   const isBye1 = match.p1?.id === 'bye';
   const isBye2 = match.p2?.id === 'bye';
   const isBye = isBye1 || isBye2;
@@ -176,16 +310,47 @@ function BracketMatchCell({ match, onWin, selectedMatchId, isEditable, onSlotDro
   const name = (p) => (p?.id === 'bye' ? 'Bye' : p?.name ?? '—');
   const isSelected = selectedMatchId === match.id;
 
+  const slotCellProps = (slotIndex) => ({
+    match,
+    slotIndex,
+    isEditable: true,
+    onSlotDrop,
+    onPickRequest: (idx) => setPickSlot((prev) => (prev === idx ? null : idx)),
+    isPickerActive: pickSlot === slotIndex,
+  });
+
+  const matchCellStyle = { width: MATCH_WIDTH, maxWidth: MATCH_WIDTH, minWidth: MATCH_WIDTH };
+  const titleText = matchTitle(match, boardAssignment);
+  const header = (
+    <MatchHeaderRow
+      match={match}
+      boardAssignment={boardAssignment}
+      boardCount={boardCount}
+      onBoardChange={onBoardChange}
+      titleText={titleText}
+    />
+  );
+
+  const clearWinButton = match.winner && onClearWin && (
+    <button
+      type="button"
+      className="w-full py-1.5 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 hover:text-slate-900 dark:hover:text-white border-t border-slate-300 dark:border-slate-600"
+      onClick={() => onClearWin(match.id)}
+    >
+      Clear winner
+    </button>
+  );
+
   if (isBye && singlePlayer && !isEditable) {
     return (
       <div
-        style={{ minWidth: MATCH_WIDTH - 20 }}
-        className={`rounded border px-2 py-1.5 text-base ${
+        style={matchCellStyle}
+        className={`rounded border overflow-hidden px-2 py-1.5 text-base ${
           isSelected ? 'border-amber-400 bg-amber-500/10' : 'border-slate-300 dark:border-slate-600 bg-slate-100/90 dark:bg-slate-700/50'
         }`}
       >
-        <div className="text-slate-600 dark:text-slate-400 text-sm font-mono">{matchTitle(match, boardAssignment)}</div>
-        <div className="font-medium text-slate-700 dark:text-slate-300">{name(singlePlayer)}</div>
+        {header}
+        <div className="font-medium text-slate-700 dark:text-slate-300 truncate" title={name(singlePlayer)}>{name(singlePlayer)}</div>
         <div className="text-sm text-amber-500/80">Advances (Bye)</div>
         {!match.winner && (
           <button
@@ -196,6 +361,7 @@ function BracketMatchCell({ match, onWin, selectedMatchId, isEditable, onSlotDro
             Advance
           </button>
         )}
+        {clearWinButton}
       </div>
     );
   }
@@ -203,16 +369,18 @@ function BracketMatchCell({ match, onWin, selectedMatchId, isEditable, onSlotDro
   if (isBye && isEditable) {
     return (
       <div
-        style={{ minWidth: MATCH_WIDTH - 20 }}
+        ref={pickSlot != null ? pickerRef : undefined}
+        style={matchCellStyle}
         className={`rounded border overflow-hidden ${
           isSelected ? 'border-amber-400 ring-1 ring-amber-500 dark:ring-amber-400' : 'border-slate-300 dark:border-slate-600 bg-slate-100/90 dark:bg-slate-800/80'
         }`}
       >
-        <div className="text-slate-600 dark:text-slate-500 text-sm font-mono px-2 py-1 bg-slate-100/90 dark:bg-slate-700/50">{matchTitle(match, boardAssignment)}</div>
-        <div className="flex">
-          <SlotCell match={match} slotIndex={0} onWin={onWin} selectedMatchId={selectedMatchId} isEditable onSlotDrop={onSlotDrop} />
-          <SlotCell match={match} slotIndex={1} onWin={onWin} selectedMatchId={selectedMatchId} isEditable onSlotDrop={onSlotDrop} />
+        {header}
+        <div className="flex flex-col min-w-0">
+          <SlotCell {...slotCellProps(0)} />
+          <SlotCell {...slotCellProps(1)} />
         </div>
+        {slotPicker}
         {!match.winner && singlePlayer && (
           <button
             type="button"
@@ -222,36 +390,39 @@ function BracketMatchCell({ match, onWin, selectedMatchId, isEditable, onSlotDro
             Advance (Bye)
           </button>
         )}
+        {clearWinButton}
       </div>
     );
   }
 
   return (
     <div
-      style={{ minWidth: MATCH_WIDTH - 20 }}
+      ref={pickSlot != null ? pickerRef : undefined}
+      style={matchCellStyle}
       className={`rounded border overflow-hidden ${
         isSelected ? 'border-amber-400 ring-1 ring-amber-500 dark:ring-amber-400' : 'border-slate-300 dark:border-slate-600 bg-slate-100/90 dark:bg-slate-800/80'
       }`}
     >
-      <div className="text-slate-600 dark:text-slate-500 text-sm font-mono px-2 py-1 bg-slate-100/90 dark:bg-slate-700/50">{matchTitle(match, boardAssignment)}</div>
-      <div className="flex">
+      {header}
+      <div className="flex flex-col min-w-0">
         <SlotCell
           match={match}
           slotIndex={0}
-          onWin={onWin}
-          selectedMatchId={selectedMatchId}
           isEditable={isEditable}
           onSlotDrop={onSlotDrop}
+          onPickRequest={isEditable ? (idx) => setPickSlot((prev) => (prev === idx ? null : idx)) : undefined}
+          isPickerActive={pickSlot === 0}
         />
         <SlotCell
           match={match}
           slotIndex={1}
-          onWin={onWin}
-          selectedMatchId={selectedMatchId}
           isEditable={isEditable}
           onSlotDrop={onSlotDrop}
+          onPickRequest={isEditable ? (idx) => setPickSlot((prev) => (prev === idx ? null : idx)) : undefined}
+          isPickerActive={pickSlot === 1}
         />
       </div>
+      {slotPicker}
       {match.p1 && match.p2 && match.p1.id !== 'bye' && match.p2.id !== 'bye' && (
         <div className="flex text-sm">
           <button
@@ -270,16 +441,18 @@ function BracketMatchCell({ match, onWin, selectedMatchId, isEditable, onSlotDro
           </button>
         </div>
       )}
+      {clearWinButton}
     </div>
   );
 }
 
-export function SingleElimDiagram({ matches, boardCount = 2, onWin, selectedMatchId, onSlotDrop }) {
+export function SingleElimDiagram({ matches, boardCount = 2, boardOverrides = {}, onBoardChange, onWin, onClearWin, selectedMatchId, onSlotDrop, availablePlayers = [] }) {
   const matchIdsKey = matches.map((m) => m.id).sort().join('|');
+  const overridesKey = JSON.stringify(boardOverrides);
   const boardByMatchId = useMemo(
-    () => buildBoardMapSingleElim(matches, boardCount),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable layout until match ids / board count change
-    [matchIdsKey, boardCount]
+    () => applyBoardOverrides(buildBoardMapSingleElim(matches, boardCount), boardOverrides),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable layout until match ids / board count / overrides change
+    [matchIdsKey, boardCount, overridesKey]
   );
 
   const roundGroups = matches.reduce((acc, m) => {
@@ -301,7 +474,7 @@ export function SingleElimDiagram({ matches, boardCount = 2, onWin, selectedMatc
     <div className="overflow-x-auto overflow-y-auto rounded-xl border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/80 p-4 w-full">
       <p className="text-slate-500 dark:text-slate-400 text-sm mb-3">
         Up to {nBoards} boards (from setup). Only one match per board at a time—extra matches in a round use
-        the next wave (Wave 2, 3, …) when earlier waves finish.
+        the next wave (Wave 2, 3, …) when earlier waves finish. Use the <span className="font-mono">Bd</span> dropdown on each match to set its board.
       </p>
       <div className="inline-flex gap-6 items-start min-w-0">
         {rounds.map(([label, roundMatches]) => (
@@ -313,10 +486,14 @@ export function SingleElimDiagram({ matches, boardCount = 2, onWin, selectedMatc
                   <BracketMatchCell
                     match={m}
                     boardAssignment={boardByMatchId.get(m.id)}
+                    boardCount={boardCount}
+                    onBoardChange={onBoardChange}
                     onWin={onWin}
+                    onClearWin={onClearWin}
                     selectedMatchId={selectedMatchId}
                     isEditable={!!onSlotDrop}
                     onSlotDrop={onSlotDrop}
+                    availablePlayers={availablePlayers}
                   />
                 </div>
               ))}
@@ -328,12 +505,13 @@ export function SingleElimDiagram({ matches, boardCount = 2, onWin, selectedMatc
   );
 }
 
-export function BracketDiagram({ matches, matchById, boardCount = 2, onWin, selectedMatchId, onSlotDrop }) {
+export function BracketDiagram({ matches, matchById, boardCount = 2, boardOverrides = {}, onBoardChange, onWin, onClearWin, selectedMatchId, onSlotDrop, availablePlayers = [] }) {
   const matchIdsKey = matches.map((m) => m.id).sort().join('|');
+  const overridesKey = JSON.stringify(boardOverrides);
   const boardByMatchId = useMemo(
-    () => buildBoardMapDoubleElim(matches, boardCount),
+    () => applyBoardOverrides(buildBoardMapDoubleElim(matches, boardCount), boardOverrides),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [matchIdsKey, boardCount]
+    [matchIdsKey, boardCount, overridesKey]
   );
 
   const wbMatches = matches.filter((m) => m.bracket === 'wb');
@@ -358,7 +536,7 @@ export function BracketDiagram({ matches, matchById, boardCount = 2, onWin, sele
     <div className="overflow-x-auto overflow-y-auto rounded-xl border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/80 p-4 w-full">
       <p className="text-slate-500 dark:text-slate-400 text-sm mb-3">
         Up to {nBoards} boards (from setup). Only one match per board at a time—extra matches use the next wave
-        when boards free up.
+        when boards free up. Use the <span className="font-mono">Bd</span> dropdown on each match to set its board.
       </p>
       <div className="inline-flex gap-6 items-start min-w-0">
         {/* Winner's Bracket */}
@@ -379,10 +557,14 @@ export function BracketDiagram({ matches, matchById, boardCount = 2, onWin, sele
                     <BracketMatchCell
                       match={m}
                       boardAssignment={boardByMatchId.get(m.id)}
+                      boardCount={boardCount}
+                      onBoardChange={onBoardChange}
                       onWin={onWin}
+                      onClearWin={onClearWin}
                       selectedMatchId={selectedMatchId}
                       isEditable={!!onSlotDrop}
                       onSlotDrop={onSlotDrop}
+                      availablePlayers={availablePlayers}
                     />
                   </div>
                 ))}
@@ -401,10 +583,14 @@ export function BracketDiagram({ matches, matchById, boardCount = 2, onWin, sele
                   key={m.id}
                   match={m}
                   boardAssignment={boardByMatchId.get(m.id)}
+                  boardCount={boardCount}
+                  onBoardChange={onBoardChange}
                   onWin={onWin}
+                  onClearWin={onClearWin}
                   selectedMatchId={selectedMatchId}
                   isEditable={!!onSlotDrop}
                   onSlotDrop={onSlotDrop}
+                  availablePlayers={availablePlayers}
                 />
               ))}
             </div>
@@ -422,10 +608,14 @@ export function BracketDiagram({ matches, matchById, boardCount = 2, onWin, sele
                     <BracketMatchCell
                       match={m}
                       boardAssignment={boardByMatchId.get(m.id)}
+                      boardCount={boardCount}
+                      onBoardChange={onBoardChange}
                       onWin={onWin}
+                      onClearWin={onClearWin}
                       selectedMatchId={selectedMatchId}
                       isEditable={!!onSlotDrop}
                       onSlotDrop={onSlotDrop}
+                      availablePlayers={availablePlayers}
                     />
                   </div>
                 ))}
