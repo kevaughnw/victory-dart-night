@@ -31,6 +31,88 @@ function getPlayer(match, playerId) {
   return null;
 }
 
+function bumpWinLoss(tally, playerId, outcome) {
+  if (!playerId || playerId === 'bye') return;
+  const t = tally.get(playerId) ?? { wins: 0, losses: 0 };
+  if (outcome === 'win') t.wins += 1;
+  else t.losses += 1;
+  tally.set(playerId, t);
+}
+
+function applyResultToWinLoss(tally, p1Id, p2Id, winnerId) {
+  if (!winnerId || winnerId === 'bye') return;
+  if (p1Id === 'bye' || p2Id === 'bye') {
+    bumpWinLoss(tally, winnerId, 'win');
+    return;
+  }
+  if (!p1Id || !p2Id) return;
+  const loserId = winnerId === p1Id ? p2Id : p1Id;
+  bumpWinLoss(tally, winnerId, 'win');
+  bumpWinLoss(tally, loserId, 'loss');
+}
+
+function formatWinLoss(playerId, tally) {
+  if (!playerId || playerId === 'bye') return '—';
+  const t = tally.get(playerId) ?? { wins: 0, losses: 0 };
+  return `${t.wins}W–${t.losses}L`;
+}
+
+/** Running W–L for each row after that match is applied (same order as input). */
+function withRunningWinLoss(items, getIds) {
+  const tally = new Map();
+  return items.map((item) => {
+    const { p1Id, p2Id, winnerId } = getIds(item);
+    applyResultToWinLoss(tally, p1Id, p2Id, winnerId);
+    return { p1WL: formatWinLoss(p1Id, tally), p2WL: formatWinLoss(p2Id, tally) };
+  });
+}
+
+function playerSlotName(p) {
+  if (!p) return '—';
+  if (p.id === 'bye') return 'Bye';
+  return p.name ?? '—';
+}
+
+function buildResultLogEntry({ matchId, label, p1, p2, winnerId, p1Score, p2Score }) {
+  return {
+    matchId,
+    label,
+    p1Id: p1?.id,
+    p2Id: p2?.id,
+    p1Name: playerSlotName(p1),
+    p2Name: playerSlotName(p2),
+    winnerId,
+    p1Score: p1Score ?? null,
+    p2Score: p2Score ?? null,
+  };
+}
+
+/** New entry freezes player names; updates only change winner/scores. */
+function upsertResultLog(log, entry) {
+  const idx = log.findIndex((r) => r.matchId === entry.matchId);
+  if (idx >= 0) {
+    const next = [...log];
+    next[idx] = {
+      ...next[idx],
+      winnerId: entry.winnerId,
+      p1Score: entry.p1Score ?? next[idx].p1Score,
+      p2Score: entry.p2Score ?? next[idx].p2Score,
+    };
+    return next;
+  }
+  return [...log, entry];
+}
+
+function removeResultLogEntry(log, matchId) {
+  return log.filter((r) => r.matchId !== matchId);
+}
+
+function winnerNameFromLogEntry(entry) {
+  if (entry.winnerId === entry.p1Id) return entry.p1Name;
+  if (entry.winnerId === entry.p2Id) return entry.p2Name;
+  return '—';
+}
+
 function getWinStreak(matchHistory, playerId) {
   if (!playerId || playerId === 'bye') return 0;
   let streak = 0;
@@ -166,7 +248,7 @@ function EditablePlayerName({ player, onRename, draggable, dragType = DRAG_TYPE,
   );
 }
 
-function BracketMatchCell({ match, onWin, onSlotDrop }) {
+function BracketMatchCell({ match, onWin, onClearWin, onSlotDrop }) {
   const [dragOverSlot, setDragOverSlot] = useState(null);
 
   const handleDrop = (e, slot) => {
@@ -232,13 +314,28 @@ function BracketMatchCell({ match, onWin, onSlotDrop }) {
           )}
         </div>
       ) : null}
+      {match.winner && onClearWin && (
+        <div className="p-2 border-t border-slate-300 dark:border-slate-600 bg-slate-100/90 dark:bg-slate-700/50">
+          <button
+            type="button"
+            className="w-full py-1.5 rounded text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 hover:text-slate-900 dark:hover:text-white"
+            onClick={() => onClearWin(match.id)}
+          >
+            Clear winner
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function MatchHistoryPanel({ matches, onScoreChange, getMatchLabel }) {
-  const completed = matches.filter((m) => m.winner != null);
-  if (completed.length === 0) return null;
+function MatchHistoryPanel({ resultsLog, onScoreChange }) {
+  const winLossByRow = withRunningWinLoss(resultsLog, (r) => ({
+    p1Id: r.p1Id,
+    p2Id: r.p2Id,
+    winnerId: r.winnerId,
+  }));
+  if (resultsLog.length === 0) return null;
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-300 dark:border-slate-600 p-4 w-full">
@@ -249,18 +346,22 @@ function MatchHistoryPanel({ matches, onScoreChange, getMatchLabel }) {
             <tr className="text-left text-slate-600 dark:text-slate-400 border-b border-slate-300 dark:border-slate-600">
               <th className="py-2 pr-4">Match</th>
               <th className="py-2 pr-4">Player 1</th>
+              <th className="py-2 pr-2">W–L</th>
               <th className="py-2 pr-4">Player 2</th>
+              <th className="py-2 pr-2">W–L</th>
               <th className="py-2 pr-4">Winner</th>
               <th className="py-2">Score (optional)</th>
             </tr>
           </thead>
           <tbody>
-            {completed.map((m, i) => (
-              <tr key={m.id} className="border-b border-slate-200/80 dark:border-slate-200 dark:border-slate-700/50">
-                <td className="py-2 pr-4 text-slate-600 dark:text-slate-500 font-mono text-base">{getMatchLabel?.(m, i) ?? m.roundLabel ?? m.id}</td>
-                <td className="py-2 pr-4">{m.p1?.name ?? '—'}</td>
-                <td className="py-2 pr-4">{m.p2?.name ?? '—'}</td>
-                <td className="py-2 pr-4 font-semibold text-emerald-700 dark:text-emerald-400">{getPlayer(m, m.winner)?.name ?? '—'}</td>
+            {resultsLog.map((r, i) => (
+              <tr key={r.matchId} className="border-b border-slate-200/80 dark:border-slate-200 dark:border-slate-700/50">
+                <td className="py-2 pr-4 text-slate-600 dark:text-slate-500 font-mono text-base">{r.label}</td>
+                <td className="py-2 pr-4">{r.p1Name}</td>
+                <td className="py-2 pr-2 text-slate-600 dark:text-slate-400 font-mono text-sm whitespace-nowrap">{winLossByRow[i]?.p1WL ?? '—'}</td>
+                <td className="py-2 pr-4">{r.p2Name}</td>
+                <td className="py-2 pr-2 text-slate-600 dark:text-slate-400 font-mono text-sm whitespace-nowrap">{winLossByRow[i]?.p2WL ?? '—'}</td>
+                <td className="py-2 pr-4 font-semibold text-emerald-700 dark:text-emerald-400">{winnerNameFromLogEntry(r)}</td>
                 <td className="py-2">
                   {onScoreChange ? (
                     <div className="flex items-center gap-1">
@@ -269,8 +370,8 @@ function MatchHistoryPanel({ matches, onScoreChange, getMatchLabel }) {
                         min={0}
                         placeholder="—"
                         className="w-14 bg-white text-slate-900 dark:bg-slate-700 dark:text-white border border-slate-300 dark:border-slate-600 rounded px-1 py-1 text-center text-base"
-                        value={m.p1Score ?? ''}
-                        onChange={(e) => onScoreChange(m.id, 'p1', e.target.value)}
+                        value={r.p1Score ?? ''}
+                        onChange={(e) => onScoreChange(r.matchId, 'p1', e.target.value)}
                       />
                       <span className="text-slate-600 dark:text-slate-500">–</span>
                       <input
@@ -278,13 +379,13 @@ function MatchHistoryPanel({ matches, onScoreChange, getMatchLabel }) {
                         min={0}
                         placeholder="—"
                         className="w-14 bg-white text-slate-900 dark:bg-slate-700 dark:text-white border border-slate-300 dark:border-slate-600 rounded px-1 py-1 text-center text-base"
-                        value={m.p2Score ?? ''}
-                        onChange={(e) => onScoreChange(m.id, 'p2', e.target.value)}
+                        value={r.p2Score ?? ''}
+                        onChange={(e) => onScoreChange(r.matchId, 'p2', e.target.value)}
                       />
                     </div>
                   ) : (
                     <span className="text-slate-600 dark:text-slate-500">
-                      {m.p1Score != null && m.p2Score != null ? `${m.p1Score}–${m.p2Score}` : '—'}
+                      {r.p1Score != null && r.p2Score != null ? `${r.p1Score}–${r.p2Score}` : '—'}
                     </span>
                   )}
                 </td>
@@ -426,7 +527,9 @@ export default function DartTournament() {
   const [stage, setStage] = useState('setup');
   const [bracketFormat, setBracketFormat] = useState('single');
   const [boardCount, setBoardCount] = useState(2);
+  const [boardOverrides, setBoardOverrides] = useState({});
   const [matchHistory, setMatchHistory] = useState([]);
+  const [matchResultsLog, setMatchResultsLog] = useState([]);
   const [qualified, setQualified] = useState([]);
   const [tournamentPhase, setTournamentPhase] = useState('pool');
   const [currentRoundMatches, setCurrentRoundMatches] = useState([]);
@@ -526,6 +629,8 @@ export default function DartTournament() {
     setNewPlayer('');
     setStage('setup');
     setMatchHistory([]);
+    setMatchResultsLog([]);
+    setBoardOverrides({});
     setQualified([]);
     setTournamentPhase('pool');
     setCurrentRoundMatches([]);
@@ -606,11 +711,49 @@ export default function DartTournament() {
           : null,
       };
     });
+
+    setMatchResultsLog((prev) =>
+      prev.map((r) => ({
+        ...r,
+        p1Name: r.p1Id === playerId ? name : r.p1Name,
+        p2Name: r.p2Id === playerId ? name : r.p2Name,
+      }))
+    );
+  };
+
+  const recordMatchResult = (matchId, label, match, winnerId) => {
+    setMatchResultsLog((prev) =>
+      upsertResultLog(
+        prev,
+        buildResultLogEntry({
+          matchId,
+          label,
+          p1: match.p1,
+          p2: match.p2,
+          winnerId,
+          p1Score: match.p1Score,
+          p2Score: match.p2Score,
+        })
+      )
+    );
+  };
+
+  const removeMatchResult = (matchId) => {
+    setMatchResultsLog((prev) => removeResultLogEntry(prev, matchId));
+  };
+
+  const handleBoardChange = (matchId, board) => {
+    setBoardOverrides((prev) => ({
+      ...prev,
+      [matchId]: { board },
+    }));
   };
 
   const startTournament = () => {
     const pool = players.filter((p) => p.id !== 'bye');
     setMatchHistory([]);
+    setMatchResultsLog([]);
+    setBoardOverrides({});
     setQualified([]);
     setCurrentRoundMatches([]);
     setFinalsMatches([]);
@@ -689,6 +832,9 @@ export default function DartTournament() {
 
     setMatchHistory(newHistory);
     setQualified(newQualified);
+    const poolLabel =
+      matchResultsLog.find((r) => r.matchId === matchId)?.label ?? `Match ${newHistory.length}`;
+    recordMatchResult(matchId, poolLabel, match, winnerId);
     setCurrentRoundMatches((prev) => {
       const updated = prev.map((m) => (m.id === matchId ? { ...m, winner: winnerId } : m));
       const allDone = updated.every((m) => m.winner != null);
@@ -716,6 +862,7 @@ export default function DartTournament() {
     setFinalsMatches((prev) =>
       prev.map((m) => (m.id === matchId ? { ...m, winner: winnerId } : m))
     );
+    recordMatchResult(matchId, match.type ?? matchId, match, winnerId);
     setSelectedMatchId(null);
   };
 
@@ -747,6 +894,8 @@ export default function DartTournament() {
 
     setMatchById(mid);
     setBracketMatches((prev) => prev.map((x) => mid[x.id] || x));
+    const label = m.roundLabel ?? (m.bracket === 'gf' ? 'GF' : m.id);
+    recordMatchResult(matchId, label, m, winnerId);
     setSelectedMatchId(null);
   };
 
@@ -776,15 +925,18 @@ export default function DartTournament() {
         return { ...s, wins, losses };
       })
     );
+    const idx = roundRobinMatches.findIndex((m) => m.id === matchId);
+    const label = idx >= 0 ? `M${idx + 1}` : matchId;
+    recordMatchResult(matchId, label, match, winnerId);
   };
 
   const handleCompassWin = (matchId, winnerId) => {
+    const m = compassData?.groups?.flatMap((g) => g.matches).find((x) => x.id === matchId);
+    if (!m || m.winner === winnerId) return;
+    const w = getPlayer(m, winnerId);
+    if (!w || w.id === 'bye') return;
     setCompassData((prev) => {
       if (!prev) return prev;
-      const m = prev.groups.flatMap((g) => g.matches).find((x) => x.id === matchId);
-      if (!m || m.winner === winnerId) return prev;
-      const w = getPlayer(m, winnerId);
-      if (!w || w.id === 'bye') return prev;
       return {
         ...prev,
         groups: prev.groups.map((g) => ({
@@ -793,20 +945,133 @@ export default function DartTournament() {
         })),
       };
     });
+    recordMatchResult(matchId, m.label ?? matchId, m, winnerId);
   };
 
   const handleCompassFinalsWin = (matchId, winnerId) => {
+    const m = compassData?.finals?.find((x) => x.id === matchId);
+    if (!m || m.winner === winnerId) return;
+    const w = getPlayer(m, winnerId);
+    if (!w || w.id === 'bye') return;
     setCompassData((prev) => {
       if (!prev || !prev.finals) return prev;
-      const m = prev.finals.find((x) => x.id === matchId);
-      if (!m || m.winner === winnerId) return prev;
-      const w = getPlayer(m, winnerId);
-      if (!w || w.id === 'bye') return prev;
       return {
         ...prev,
         finals: prev.finals.map((x) => (x.id === matchId ? { ...x, winner: winnerId } : x)),
       };
     });
+    recordMatchResult(matchId, m.label ?? m.type ?? matchId, m, winnerId);
+  };
+
+  const handleClearBracketWin = (matchId) => {
+    const match = matchById[matchId] || bracketMatches.find((m) => m.id === matchId);
+    if (!match?.winner) return;
+    const mid = {};
+    for (const k of Object.keys(matchById)) {
+      mid[k] = { ...matchById[k] };
+    }
+    reverseBracketMatchResult(mid, matchId);
+    setMatchById(mid);
+    setBracketMatches((prev) => prev.map((x) => mid[x.id] || x));
+    removeMatchResult(matchId);
+    setSelectedMatchId(null);
+  };
+
+  const handleClearPoolWin = (matchId) => {
+    const match = currentRoundMatches.find((m) => m.id === matchId);
+    if (!match?.winner) return;
+    let newHistory = matchHistory.filter((h) => h.matchId !== matchId);
+    if (newHistory.length === matchHistory.length) {
+      for (let i = matchHistory.length - 1; i >= 0; i--) {
+        const h = matchHistory[i];
+        const samePair =
+          (h.p1Id === match.p1?.id && h.p2Id === match.p2?.id) ||
+          (h.p1Id === match.p2?.id && h.p2Id === match.p1?.id);
+        if (samePair && h.winnerId === match.winner) {
+          newHistory = [...matchHistory.slice(0, i), ...matchHistory.slice(i + 1)];
+          break;
+        }
+      }
+    }
+    setMatchHistory(newHistory);
+    setQualified(recomputeQualifiedFromPoolHistory(newHistory, players));
+    setCurrentRoundMatches((prev) =>
+      prev.map((m) => (m.id === matchId ? { ...m, winner: null } : m))
+    );
+    removeMatchResult(matchId);
+    setSelectedMatchId(null);
+  };
+
+  const handleClearFinalsWin = (matchId) => {
+    const match = finalsMatches.find((m) => m.id === matchId);
+    if (!match?.winner) return;
+    setFinalsMatches((prev) =>
+      prev.map((m) => (m.id === matchId ? { ...m, winner: null } : m))
+    );
+    removeMatchResult(matchId);
+    setSelectedMatchId(null);
+  };
+
+  const handleClearRoundRobinWin = (matchId) => {
+    const match = roundRobinMatches.find((m) => m.id === matchId);
+    if (!match?.winner) return;
+    const oldWinner = match.winner;
+    const oldLoserId = match.p1?.id === oldWinner ? match.p2?.id : match.p1?.id;
+    setRoundRobinMatches((prev) =>
+      prev.map((m) => (m.id === matchId ? { ...m, winner: null } : m))
+    );
+    setRoundRobinStandings((prev) =>
+      prev.map((s) => {
+        const id = s.player?.id;
+        let wins = s.wins ?? 0;
+        let losses = s.losses ?? 0;
+        if (id === oldWinner) wins -= 1;
+        if (id === oldLoserId) losses -= 1;
+        return { ...s, wins, losses };
+      })
+    );
+    removeMatchResult(matchId);
+  };
+
+  const handleClearCompassWin = (matchId) => {
+    setCompassData((prev) => {
+      if (!prev) return prev;
+      const m = prev.groups.flatMap((g) => g.matches).find((x) => x.id === matchId);
+      if (!m?.winner) return prev;
+      return {
+        ...prev,
+        groups: prev.groups.map((g) => ({
+          ...g,
+          matches: g.matches.map((x) => (x.id === matchId ? { ...x, winner: null } : x)),
+        })),
+      };
+    });
+    removeMatchResult(matchId);
+  };
+
+  const handleClearCompassFinalsWin = (matchId) => {
+    setCompassData((prev) => {
+      if (!prev?.finals) return prev;
+      const m = prev.finals.find((x) => x.id === matchId);
+      if (!m?.winner) return prev;
+      return {
+        ...prev,
+        finals: prev.finals.map((x) => (x.id === matchId ? { ...x, winner: null } : x)),
+      };
+    });
+    removeMatchResult(matchId);
+  };
+
+  const handleClearWin = (matchId) => {
+    if (tournamentPhase === 'bracket') handleClearBracketWin(matchId);
+    else if (tournamentPhase === 'pool') handleClearPoolWin(matchId);
+    else if (tournamentPhase === 'finals') handleClearFinalsWin(matchId);
+    else if (tournamentPhase === 'roundRobin') handleClearRoundRobinWin(matchId);
+    else if (tournamentPhase === 'compass') {
+      const inFinals = compassData?.finals?.some((m) => m.id === matchId);
+      if (inFinals) handleClearCompassFinalsWin(matchId);
+      else handleClearCompassWin(matchId);
+    }
   };
 
   const handleScoreChange = (matchId, slot, value) => {
@@ -843,6 +1108,11 @@ export default function DartTournament() {
         prev.map((m) => (m.id === matchId ? { ...m, [slot === 'p1' ? 'p1Score' : 'p2Score']: num } : m))
       );
     }
+    setMatchResultsLog((prev) =>
+      prev.map((r) =>
+        r.matchId === matchId ? { ...r, [slot === 'p1' ? 'p1Score' : 'p2Score']: num } : r
+      )
+    );
   };
 
   const handleSlotDrop = (matchId, slot, player, sourceMatchId, sourceSlot) => {
@@ -935,7 +1205,10 @@ export default function DartTournament() {
   const celebrationFiredRef = useRef(false);
 
   useEffect(() => {
-    if (!tournamentOver) return;
+    if (!tournamentOver) {
+      celebrationFiredRef.current = false;
+      return;
+    }
     if (celebrationFiredRef.current) return;
     celebrationFiredRef.current = true;
     playCelebrationSound();
@@ -958,61 +1231,22 @@ export default function DartTournament() {
   }, []);
 
   const completedMatchesForExport = useMemo(() => {
-    const getMatchLabel = (m, i) => m.roundLabel ?? m.label ?? `M${i + 1}`;
-    if (tournamentPhase === 'bracket') {
-      return bracketMatches.filter((m) => m.winner != null).map((m, i) => ({
-        match: getMatchLabel(m, i),
-        p1: m.p1?.name ?? '—',
-        p2: m.p2?.name ?? '—',
-        winner: getPlayer(m, m.winner)?.name ?? '—',
-        loser: getPlayer(m, m.winner === m.p1?.id ? m.p2?.id : m.p1?.id)?.name ?? '—',
-        score: m.p1Score != null && m.p2Score != null ? `${m.p1Score}–${m.p2Score}` : null,
-      }));
-    }
-    if (tournamentPhase === 'roundRobin') {
-      return roundRobinMatches.filter((m) => m.winner != null).map((m, i) => ({
-        match: `M${i + 1}`,
-        p1: m.p1?.name ?? '—',
-        p2: m.p2?.name ?? '—',
-        winner: getPlayer(m, m.winner)?.name ?? '—',
-        loser: getPlayer(m, m.winner === m.p1?.id ? m.p2?.id : m.p1?.id)?.name ?? '—',
-        score: m.p1Score != null && m.p2Score != null ? `${m.p1Score}–${m.p2Score}` : null,
-      }));
-    }
-    if (tournamentPhase === 'compass' && compassData) {
-      const all = [...(compassData.groups?.flatMap((g) => g.matches) ?? []), ...(compassData.finals ?? [])];
-      return all.filter((m) => m.winner != null).map((m, i) => ({
-        match: m.label ?? getMatchLabel(m, i),
-        p1: m.p1?.name ?? '—',
-        p2: m.p2?.name ?? '—',
-        winner: getPlayer(m, m.winner)?.name ?? '—',
-        loser: getPlayer(m, m.winner === m.p1?.id ? m.p2?.id : m.p1?.id)?.name ?? '—',
-        score: m.p1Score != null && m.p2Score != null ? `${m.p1Score}–${m.p2Score}` : null,
-      }));
-    }
-    if (tournamentPhase === 'finals') {
-      return finalsMatches.filter((m) => m.winner != null).map((m, i) => ({
-        match: m.type ?? `Match ${i + 1}`,
-        p1: m.p1?.name ?? '—',
-        p2: m.p2?.name ?? '—',
-        winner: getPlayer(m, m.winner)?.name ?? '—',
-        loser: getPlayer(m, m.winner === m.p1?.id ? m.p2?.id : m.p1?.id)?.name ?? '—',
-        score: m.p1Score != null && m.p2Score != null ? `${m.p1Score}–${m.p2Score}` : null,
-      }));
-    }
-    if (tournamentPhase === 'pool' && matchHistory.length > 0) {
-      const getPlayerName = (id) => players.find((p) => p.id === id)?.name ?? '—';
-      return matchHistory.map((m, i) => ({
-        match: `Match ${i + 1}`,
-        p1: getPlayerName(m.p1Id),
-        p2: getPlayerName(m.p2Id),
-        winner: getPlayerName(m.winnerId),
-        loser: getPlayerName(m.winnerId === m.p1Id ? m.p2Id : m.p1Id),
-        score: null,
-      }));
-    }
-    return [];
-  }, [tournamentPhase, bracketMatches, roundRobinMatches, compassData, finalsMatches, matchHistory, players]);
+    const wlRows = withRunningWinLoss(matchResultsLog, (r) => ({
+      p1Id: r.p1Id,
+      p2Id: r.p2Id,
+      winnerId: r.winnerId,
+    }));
+    return matchResultsLog.map((r, i) => ({
+      match: r.label,
+      p1: r.p1Name,
+      p2: r.p2Name,
+      p1WL: wlRows[i]?.p1WL ?? '—',
+      p2WL: wlRows[i]?.p2WL ?? '—',
+      winner: winnerNameFromLogEntry(r),
+      loser: r.winnerId === r.p1Id ? r.p2Name : r.winnerId === r.p2Id ? r.p1Name : '—',
+      score: r.p1Score != null && r.p2Score != null ? `${r.p1Score}–${r.p2Score}` : null,
+    }));
+  }, [matchResultsLog]);
 
   const exportResultsRef = useRef(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -1094,7 +1328,9 @@ export default function DartTournament() {
               <tr className="text-left text-slate-600 dark:text-slate-400 border-b border-slate-300 dark:border-slate-600">
                 <th className="py-2 pr-4">Match</th>
                 <th className="py-2 pr-4">Player 1</th>
+                <th className="py-2 pr-2">W–L</th>
                 <th className="py-2 pr-4">Player 2</th>
+                <th className="py-2 pr-2">W–L</th>
                 <th className="py-2 pr-4">Winner</th>
                 <th className="py-2 pr-4">Loser</th>
                 <th className="py-2">Score</th>
@@ -1105,7 +1341,9 @@ export default function DartTournament() {
                 <tr key={i} className="border-b border-slate-200/80 dark:border-slate-200 dark:border-slate-700/50">
                   <td className="py-2 pr-4 text-slate-600 dark:text-slate-500 font-mono text-sm">{row.match}</td>
                   <td className="py-2 pr-4">{row.p1}</td>
+                  <td className="py-2 pr-2 text-slate-600 dark:text-slate-400 font-mono text-sm">{row.p1WL}</td>
                   <td className="py-2 pr-4">{row.p2}</td>
+                  <td className="py-2 pr-2 text-slate-600 dark:text-slate-400 font-mono text-sm">{row.p2WL}</td>
                   <td className="py-2 pr-4 font-semibold text-emerald-700 dark:text-emerald-400">{row.winner}</td>
                   <td className="py-2 pr-4 text-slate-600 dark:text-slate-400">{row.loser}</td>
                   <td className="py-2">{row.score ?? '—'}</td>
@@ -1388,7 +1626,7 @@ export default function DartTournament() {
               <Medal className="text-slate-600 dark:text-slate-400 shrink-0" /> Players ({players.filter((p) => p.id !== 'bye').length})
             </h3>
             <p className="text-slate-600 dark:text-slate-500 text-sm px-4 pt-2">
-              Drag players into bracket slots to assign. Use the pencil to fix spelling anytime.
+              Drag players into bracket slots, or click <span className="italic">Drop here</span> in the diagram to pick a name. Use the pencil to fix spelling anytime.
             </p>
             <div className="p-4 space-y-4">
               <div className="flex flex-wrap gap-2">
@@ -1430,8 +1668,12 @@ export default function DartTournament() {
                   <SingleElimDiagram
                     matches={bracketMatches}
                     boardCount={boardCount}
+                    boardOverrides={boardOverrides}
+                    onBoardChange={handleBoardChange}
                     onWin={handleBracketWin}
+                    onClearWin={handleClearBracketWin}
                     selectedMatchId={selectedMatchId}
+                    availablePlayers={players.filter((p) => p.id !== 'bye')}
                     onSlotDrop={(matchId, slotIndex, payload) =>
                       handleSlotDrop(matchId, slotIndex === 0 ? 'p1' : 'p2', payload.player, payload.sourceMatchId, payload.sourceSlot === 0 ? 'p1' : 'p2')
                     }
@@ -1441,8 +1683,11 @@ export default function DartTournament() {
                     matches={bracketMatches}
                     matchById={matchById}
                     boardCount={boardCount}
+                    boardOverrides={boardOverrides}
+                    onBoardChange={handleBoardChange}
                     onWin={handleBracketWin}
-                    selectedMatchId={selectedMatchId}
+                    onClearWin={handleClearBracketWin}
+                    availablePlayers={players.filter((p) => p.id !== 'bye')}
                     onSlotDrop={(matchId, slotIndex, payload) =>
                       handleSlotDrop(matchId, slotIndex === 0 ? 'p1' : 'p2', payload.player, payload.sourceMatchId, payload.sourceSlot === 0 ? 'p1' : 'p2')
                     }
@@ -1450,9 +1695,8 @@ export default function DartTournament() {
                 )}
               </div>
               <MatchHistoryPanel
-                matches={bracketMatches}
+                resultsLog={matchResultsLog}
                 onScoreChange={handleScoreChange}
-                getMatchLabel={(m) => m.roundLabel ?? (m.bracket === 'gf' ? 'GF' : m.id)}
               />
             </>
           )}
@@ -1471,14 +1715,13 @@ export default function DartTournament() {
                 <h3 className="text-base font-bold text-slate-700 dark:text-slate-300 mb-3">Matches</h3>
                 <div className="flex flex-wrap gap-4">
                   {roundRobinMatches.map((m) => (
-                    <BracketMatchCell key={m.id} match={m} onWin={handleRoundRobinWin} onSlotDrop={handleSlotDrop} />
+                    <BracketMatchCell key={m.id} match={m} onWin={handleRoundRobinWin} onClearWin={handleClearWin} onSlotDrop={handleSlotDrop} />
                   ))}
                 </div>
               </div>
               <MatchHistoryPanel
-                matches={roundRobinMatches}
+                resultsLog={matchResultsLog}
                 onScoreChange={handleScoreChange}
-                getMatchLabel={(m, i) => `M${i + 1}`}
               />
             </>
           )}
@@ -1490,7 +1733,7 @@ export default function DartTournament() {
                   <h3 className="text-base font-bold text-amber-700 dark:text-amber-400 mb-3">{g.label} bracket</h3>
                   <div className="flex flex-wrap gap-4">
                     {g.matches.map((m) => (
-                      <BracketMatchCell key={m.id} match={m} onWin={handleCompassWin} onSlotDrop={handleSlotDrop} />
+                      <BracketMatchCell key={m.id} match={m} onWin={handleCompassWin} onClearWin={handleClearWin} onSlotDrop={handleSlotDrop} />
                     ))}
                   </div>
                 </div>
@@ -1502,16 +1745,15 @@ export default function DartTournament() {
                     {compassData.finals.map((m) => (
                       <div key={m.id} className="flex flex-col">
                         <span className="text-slate-600 dark:text-slate-500 text-sm mb-1">{m.label}</span>
-                        <BracketMatchCell match={m} onWin={handleCompassFinalsWin} onSlotDrop={handleSlotDrop} />
+                        <BracketMatchCell match={m} onWin={handleCompassFinalsWin} onClearWin={handleClearWin} onSlotDrop={handleSlotDrop} />
                       </div>
                     ))}
                   </div>
                 </div>
               )}
               <MatchHistoryPanel
-                matches={[...(compassData.groups?.flatMap((g) => g.matches) ?? []), ...(compassData.finals ?? [])]}
+                resultsLog={matchResultsLog}
                 onScoreChange={handleScoreChange}
-                getMatchLabel={(m) => m.label ?? m.id}
               />
             </>
           )}
@@ -1559,6 +1801,7 @@ export default function DartTournament() {
                         <BracketMatchCell
                           match={m}
                           onWin={handlePoolWin}
+                          onClearWin={handleClearWin}
                           onSlotDrop={handleSlotDrop}
                         />
                       </div>
@@ -1576,10 +1819,12 @@ export default function DartTournament() {
                   ))}
                 </div>
               </div>
+              <MatchHistoryPanel resultsLog={matchResultsLog} onScoreChange={handleScoreChange} />
             </>
           )}
 
           {tournamentPhase === 'finals' && (
+            <>
             <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-300 dark:border-slate-600 p-4 w-full overflow-x-auto">
               <h3 className="text-base font-bold text-amber-700 dark:text-amber-400 mb-3">Finals bracket</h3>
               <div className="flex gap-8 flex-wrap">
@@ -1589,12 +1834,18 @@ export default function DartTournament() {
                     <BracketMatchCell
                       match={m}
                       onWin={handleFinalsWin}
+                      onClearWin={handleClearWin}
                       onSlotDrop={handleSlotDrop}
                     />
                   </div>
                 ))}
               </div>
             </div>
+            <MatchHistoryPanel
+              resultsLog={matchResultsLog}
+              onScoreChange={handleScoreChange}
+            />
+            </>
           )}
 
           {tournamentOver && (
